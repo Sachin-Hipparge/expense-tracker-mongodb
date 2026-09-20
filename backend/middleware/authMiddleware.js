@@ -1,6 +1,6 @@
 const jwt = require("jsonwebtoken");
 
-const JWT_SECRET = "expense_tracker_secret";
+const JWT_SECRET = process.env.JWT_SECRET;
 
 function authenticate(req, res, next) {
 

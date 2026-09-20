@@ -1,7 +1,10 @@
 const SibApiV3Sdk = require("sib-api-v3-sdk");
 const { v4: uuidv4 } = require("uuid");
-const db = require("../utils/database");
 const bcrypt = require("bcrypt");
+
+const User = require("../models/User");
+const ForgotPasswordRequest = require("../models/ForgotPasswordRequest");
+
 
 async function forgotPassword(req, res) {
 
@@ -12,29 +15,24 @@ async function forgotPassword(req, res) {
     console.log("Email received:", email);
 
     if (!email) {
+
         return res.status(400).json({
             message: "Email is required"
         });
+
     }
 
     try {
 
         // 1. Find the user
 
-        const findUserSql = `
-            SELECT id, name, email
-            FROM users
-            WHERE email = ?
-        `;
-
-        const [users] =
-            await db.execute(
-                findUserSql,
-                [email]
-            );
+        const user =
+            await User.findOne({
+                email
+            });
 
 
-        if (users.length === 0) {
+        if (!user) {
 
             return res.status(404).json({
                 message: "User not found"
@@ -43,12 +41,11 @@ async function forgotPassword(req, res) {
         }
 
 
-        const user = users[0];
-
-
         // 2. Generate unique UUID
 
-        const requestId = uuidv4();
+        const requestId =
+            uuidv4();
+
 
         console.log(
             "Generated reset request ID:",
@@ -56,22 +53,17 @@ async function forgotPassword(req, res) {
         );
 
 
-        // 3. Save reset request
+        // 3. Save reset request in MongoDB
 
-        const insertRequestSql = `
-            INSERT INTO ForgotPasswordRequests
-            (id, userId, isActive)
-            VALUES (?, ?, ?)
-        `;
+        await ForgotPasswordRequest.create({
 
-        await db.execute(
-            insertRequestSql,
-            [
-                requestId,
-                user.id,
-                true
-            ]
-        );
+            _id: requestId,
+
+            userId: user._id,
+
+            isActive: true
+
+        });
 
 
         console.log(
@@ -82,7 +74,7 @@ async function forgotPassword(req, res) {
         // 4. Create reset URL
 
         const resetUrl =
-    `${process.env.FRONTEND_URL}/reset-password.html?id=${requestId}`;
+            `${process.env.FRONTEND_URL}/reset-password.html?id=${requestId}`;
 
 
         console.log(
@@ -108,19 +100,26 @@ async function forgotPassword(req, res) {
 
 
         sendSmtpEmail.sender = {
+
             email:
                 process.env.SENDER_EMAIL,
 
             name:
                 "Expense Tracker"
+
         };
 
 
         sendSmtpEmail.to = [
+
             {
-                email: user.email,
-                name: user.name
+                email:
+                    user.email,
+
+                name:
+                    user.name
             }
+
         ];
 
 
@@ -161,8 +160,10 @@ Expense Tracker
 
 
         res.status(200).json({
+
             message:
                 "Password reset email sent successfully"
+
         });
 
 
@@ -175,35 +176,35 @@ Expense Tracker
 
 
         res.status(500).json({
+
             message:
                 "Could not process password reset"
+
         });
 
     }
 
 }
 
+
 async function showResetPasswordPage(req, res) {
 
-    const requestId = req.params.id;
+    const requestId =
+        req.params.id;
 
     try {
 
-        const sql = `
-            SELECT *
-            FROM ForgotPasswordRequests
-            WHERE id = ?
-            AND isActive = true
-        `;
+        const request =
+            await ForgotPasswordRequest.findOne({
 
-        const [results] =
-            await db.execute(
-                sql,
-                [requestId]
-            );
+                _id: requestId,
+
+                isActive: true
+
+            });
 
 
-        if (results.length === 0) {
+        if (!request) {
 
             return res.status(400).send(
                 "Invalid or expired password reset link"
@@ -214,9 +215,9 @@ async function showResetPasswordPage(req, res) {
 
         // Reset request is valid
 
-       res.redirect(
-    `http://127.0.0.1:5500/frontend/reset-password.html?id=${requestId}`
-);
+        res.redirect(
+            `http://127.0.0.1:5500/frontend/reset-password.html?id=${requestId}`
+        );
 
 
     } catch (error) {
@@ -237,52 +238,58 @@ async function showResetPasswordPage(req, res) {
 
 async function resetPassword(req, res) {
 
-    const requestId = req.params.id;
-    const { password } = req.body;
+    const requestId =
+        req.params.id;
+
+    const { password } =
+        req.body;
+
 
     if (!password) {
 
         return res.status(400).json({
-            message: "Password is required"
+
+            message:
+                "Password is required"
+
         });
 
     }
 
+
     try {
 
-        // 1. Find the reset request
+        // 1. Find active reset request
 
-        const findRequestSql = `
-            SELECT userId
-            FROM ForgotPasswordRequests
-            WHERE id = ?
-            AND isActive = true
-        `;
+        const request =
+            await ForgotPasswordRequest.findOne({
 
-        const [requests] =
-            await db.execute(
-                findRequestSql,
-                [requestId]
-            );
+                _id: requestId,
+
+                isActive: true
+
+            });
 
 
         // Invalid or already-used link
 
-        if (requests.length === 0) {
+        if (!request) {
 
             return res.status(400).json({
+
                 message:
                     "Invalid or expired password reset link"
+
             });
 
         }
 
 
         const userId =
-            requests[0].userId;
+            request.userId;
 
 
-        // 2. Hash the new password
+        // 2. Hash new password
 
         const hashedPassword =
             await bcrypt.hash(
@@ -293,37 +300,38 @@ async function resetPassword(req, res) {
 
         // 3. Update user's password
 
-        const updateUserSql = `
-            UPDATE users
-            SET password = ?
-            WHERE id = ?
-        `;
+        await User.findByIdAndUpdate(
 
-        await db.execute(
-            updateUserSql,
-            [hashedPassword, userId]
+            userId,
+
+            {
+                password:
+                    hashedPassword
+            }
+
         );
 
 
         // 4. Make reset link inactive
 
-        const deactivateRequestSql = `
-            UPDATE ForgotPasswordRequests
-            SET isActive = false
-            WHERE id = ?
-        `;
+        await ForgotPasswordRequest.findByIdAndUpdate(
 
-        await db.execute(
-            deactivateRequestSql,
-            [requestId]
+            requestId,
+
+            {
+                isActive: false
+            }
+
         );
 
 
         // 5. Success
 
         res.status(200).json({
+
             message:
                 "Password reset successfully"
+
         });
 
 
@@ -335,17 +343,23 @@ async function resetPassword(req, res) {
         );
 
         res.status(500).json({
+
             message:
                 "Could not reset password"
+
         });
 
     }
 
 }
 
+
 module.exports = {
+
     forgotPassword,
+
     showResetPasswordPage,
+
     resetPassword
 
 };

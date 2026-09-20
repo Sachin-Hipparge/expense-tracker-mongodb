@@ -1,4 +1,4 @@
-const db = require("../utils/database");
+const User = require("../models/User");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { JWT_SECRET } = require("../middleware/authMiddleware");
@@ -14,17 +14,10 @@ async function signup(req, res) {
 
         // Check whether email already exists
 
-        const checkSql = `
-            SELECT *
-            FROM users
-            WHERE email = ?
-        `;
+        const existingUser =
+            await User.findOne({ email });
 
-        const [results] =
-            await db.execute(checkSql, [email]);
-
-
-        if (results.length > 0) {
+        if (existingUser) {
 
             return res.status(409).json({
                 message: "Email already registered"
@@ -39,18 +32,13 @@ async function signup(req, res) {
             await bcrypt.hash(password, 10);
 
 
-        // Insert user
+        // Create user
 
-        const insertSql = `
-            INSERT INTO users
-            (name, email, password)
-            VALUES (?, ?, ?)
-        `;
-
-        await db.execute(
-            insertSql,
-            [name, email, hashedPassword]
-        );
+        await User.create({
+            name,
+            email,
+            password: hashedPassword
+        });
 
 
         res.status(201).json({
@@ -81,26 +69,17 @@ async function login(req, res) {
 
         // Find user
 
-        const sql = `
-            SELECT *
-            FROM users
-            WHERE email = ?
-        `;
-
-        const [results] =
-            await db.execute(sql, [email]);
+        const user =
+            await User.findOne({ email });
 
 
-        if (results.length === 0) {
+        if (!user) {
 
             return res.status(401).json({
                 message: "Invalid email"
             });
 
         }
-
-
-        const user = results[0];
 
 
         // Compare password
@@ -124,7 +103,7 @@ async function login(req, res) {
         // Create JWT
 
         const token = jwt.sign(
-            { userId: user.id },
+            { userId: user._id.toString() },
             JWT_SECRET,
             { expiresIn: "1h" }
         );
@@ -160,17 +139,12 @@ async function getPremiumStatus(req, res) {
 
     try {
 
-        const sql = `
-            SELECT isPremium
-            FROM users
-            WHERE id = ?
-        `;
-
-        const [results] =
-            await db.execute(sql, [userId]);
+        const user =
+            await User.findById(userId)
+                .select("isPremium");
 
 
-        if (results.length === 0) {
+        if (!user) {
 
             return res.status(404).json({
                 message: "User not found"
@@ -182,7 +156,7 @@ async function getPremiumStatus(req, res) {
         res.status(200).json({
 
             isPremium:
-                results[0].isPremium
+                user.isPremium
 
         });
 

@@ -2,6 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 
+const connectDB = require("./utils/database");
+
 const userRoutes = require("./routes/userRoutes");
 const expenseRoutes = require("./routes/expenseRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
@@ -25,6 +27,11 @@ app.use("/leaderboard", leaderboardRoutes);
 app.use("/expense", expenseRoutes);
 app.use("/purchase", paymentRoutes);
 app.use("/password", passwordRoutes);
+
+
+// Connect to MongoDB
+
+connectDB();
 
 
 // Start server

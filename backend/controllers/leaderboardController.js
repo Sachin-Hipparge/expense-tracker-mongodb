@@ -1,49 +1,44 @@
-const db = require("../utils/database");
+const User = require("../models/User");
 
 async function getLeaderboard(req, res) {
-
     const userId = req.userId;
 
     try {
+        const currentUser = await User.findById(userId)
+            .select("isPremium");
 
-        const leaderboardQuery = `
-            SELECT
-                id,
-                name,
-                totalExpense
-            FROM users
-            WHERE EXISTS (
-                SELECT 1
-                FROM users AS currentUser
-                WHERE currentUser.id = ?
-                AND currentUser.isPremium = true
-            )
-            ORDER BY totalExpense DESC
-        `;
+        if (!currentUser) {
+            return res.status(404).json({
+                message: "User not found"
+            });
+        }
 
-        const [results] =
-            await db.execute(
-                leaderboardQuery,
-                [userId]
-            );
+        if (!currentUser.isPremium) {
+            return res.status(403).json({
+                message: "Premium membership required"
+            });
+        }
 
+        const users = await User.find()
+            .select("name totalExpense")
+            .sort({ totalExpense: -1 })
+            .lean();
 
-        res.status(200).json(results);
+        const leaderboard = users.map((user) => ({
+            id: user._id.toString(),
+            name: user.name,
+            totalExpense: user.totalExpense
+        }));
 
+        res.status(200).json(leaderboard);
 
     } catch (error) {
-
-        console.log(
-            "Leaderboard error:",
-            error
-        );
+        console.log("Leaderboard error:", error);
 
         res.status(500).json({
             message: "Database error"
         });
-
     }
-
 }
 
 module.exports = {

@@ -1,5 +1,13 @@
-const db = require("../utils/database");
-const { categorizeExpense } = require("../services/aiService");
+const mongoose = require("mongoose");
+
+const Expense = require("../models/Expense");
+const User = require("../models/User");
+
+const { categorizeExpense } =
+    require("../services/aiService");
+
+
+// ==================== ADD EXPENSE ====================
 
 async function addExpense(req, res) {
 
@@ -8,54 +16,90 @@ async function addExpense(req, res) {
 
     try {
 
-        const category = await categorizeExpense(description);
+        // Categorize expense using Gemini AI
 
-        await db.beginTransaction();
+        const category =
+            await categorizeExpense(description);
 
-        const insertSql = `
-            INSERT INTO expenses
-            (amount, description, category, userId, note)
-            VALUES (?, ?, ?, ?, ?)
-        `;
 
-        await db.execute(
-            insertSql,
-            [amount, description, category, userId, note]
-        );
+        // Start MongoDB transaction
 
-        const updateSql = `
-            UPDATE users
-            SET totalExpense = totalExpense + ?
-            WHERE id = ?
-        `;
+        const session =
+            await mongoose.startSession();
 
-        await db.execute(
-            updateSql,
-            [amount, userId]
-        );
+        session.startTransaction();
 
-        await db.commit();
 
-        res.status(201).json({
-            message: "Expense added successfully",
-            category: category
-        });
+        try {
+
+            // Create expense
+
+            await Expense.create(
+                [
+                    {
+                        amount,
+                        description,
+                        category,
+                        userId,
+                        note
+                    }
+                ],
+                { session }
+            );
+
+
+            // Update user's total expense
+
+            await User.findByIdAndUpdate(
+                userId,
+                {
+                    $inc: {
+                        totalExpense: amount
+                    }
+                },
+                { session }
+            );
+
+
+            // Commit transaction
+
+            await session.commitTransaction();
+
+            session.endSession();
+
+
+            res.status(201).json({
+                message: "Expense added successfully",
+                category: category
+            });
+
+
+        } catch (transactionError) {
+
+            await session.abortTransaction();
+            session.endSession();
+
+            throw transactionError;
+        }
+
 
     } catch (error) {
 
-        console.log("Add expense error:", error);
-
-        try {
-            await db.rollback();
-        } catch (rollbackError) {
-            console.log("Rollback error:", rollbackError);
-        }
+        console.log(
+            "Add expense error:",
+            error
+        );
 
         res.status(500).json({
             message: "Failed to add expense"
         });
+
     }
+
 }
+
+
+// ==================== GET EXPENSES ====================
 
 async function getExpenses(req, res) {
 
@@ -63,23 +107,28 @@ async function getExpenses(req, res) {
 
     try {
 
-        const sql = `
-            SELECT *
-            FROM expenses
-            WHERE userId = ?
-            ORDER BY id DESC
-        `;
+       const expenses = await Expense.find({ userId })
+    .sort({ createdAt: -1 })
+    .lean();
 
-        const [results] =
-            await db.execute(sql, [userId]);
+const formattedExpenses = expenses.map((expense) => ({
+    id: expense._id.toString(),
+    amount: expense.amount,
+    description: expense.description,
+    category: expense.category,
+    note: expense.note,
+    createdAt: expense.createdAt
+}));
 
-
-        res.status(200).json(results);
+res.status(200).json(formattedExpenses);
 
 
     } catch (error) {
 
-        console.log("Get expenses error:", error);
+        console.log(
+            "Get expenses error:",
+            error
+        );
 
         res.status(500).json({
             message: "Failed to fetch expenses"
@@ -89,6 +138,9 @@ async function getExpenses(req, res) {
 
 }
 
+
+// ==================== DELETE EXPENSE ====================
+
 async function deleteExpense(req, res) {
 
     const expenseId = req.params.id;
@@ -96,90 +148,95 @@ async function deleteExpense(req, res) {
 
     try {
 
-        // Start transaction
+        // Start MongoDB transaction
 
-        await db.beginTransaction();
+        const session =
+            await mongoose.startSession();
+
+        session.startTransaction();
 
 
-        // 1. Get the expense amount
+        try {
 
-        const getExpense = `
-            SELECT amount
-            FROM expenses
-            WHERE id = ? AND userId = ?
-        `;
+            // Find expense belonging to current user
 
-        const [results] =
-            await db.execute(
-                getExpense,
-                [expenseId, userId]
+            const expense =
+                await Expense.findOne({
+                    _id: expenseId,
+                    userId: userId
+                }).session(session);
+
+
+            if (!expense) {
+
+                await session.abortTransaction();
+                session.endSession();
+
+                return res.status(403).json({
+                    message:
+                        "You cannot delete this expense"
+                });
+
+            }
+
+
+            // Store amount before deleting
+
+            const amount = expense.amount;
+
+
+            // Delete expense
+
+            await Expense.deleteOne(
+                {
+                    _id: expenseId,
+                    userId: userId
+                },
+                { session }
             );
 
 
-        if (results.length === 0) {
+            // Reduce total expense
 
-            await db.rollback();
+            await User.findByIdAndUpdate(
+                userId,
+                {
+                    $inc: {
+                        totalExpense: -amount
+                    }
+                },
+                { session }
+            );
 
-            return res.status(403).json({
-                message: "You cannot delete this expense"
+
+            // Commit transaction
+
+            await session.commitTransaction();
+
+            session.endSession();
+
+
+            res.status(200).json({
+                message:
+                    "Expense deleted successfully"
             });
 
+
+        } catch (transactionError) {
+
+            await session.abortTransaction();
+            session.endSession();
+
+            throw transactionError;
         }
-
-
-        const amount = results[0].amount;
-
-
-        // 2. Delete expense
-
-        const deleteSql = `
-            DELETE FROM expenses
-            WHERE id = ? AND userId = ?
-        `;
-
-        await db.execute(
-            deleteSql,
-            [expenseId, userId]
-        );
-
-
-        // 3. Reduce totalExpense
-
-        const updateTotalExpense = `
-            UPDATE users
-            SET totalExpense = totalExpense - ?
-            WHERE id = ?
-        `;
-
-        await db.execute(
-            updateTotalExpense,
-            [amount, userId]
-        );
-
-
-        // 4. Everything succeeded
-
-        await db.commit();
-
-
-        res.status(200).json({
-            message: "Expense deleted successfully"
-        });
 
 
     } catch (error) {
 
-        console.log("Delete expense error:", error);
-
-
-        // Something failed → undo everything
-
-        try {
-            await db.rollback();
-        } catch (rollbackError) {
-            console.log("Rollback error:", rollbackError);
-        }
-
+        console.log(
+            "Delete expense error:",
+            error
+        );
 
         res.status(500).json({
             message: "Failed to delete expense"
@@ -188,6 +245,7 @@ async function deleteExpense(req, res) {
     }
 
 }
+
 
 module.exports = {
     addExpense,

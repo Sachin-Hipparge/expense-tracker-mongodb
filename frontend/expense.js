@@ -1,5 +1,5 @@
 
-const API_URL = "http://13.200.243.68:3000";
+const API_URL = "http://localhost:3000";
 const token = localStorage.getItem("token");
 let allExpenses = [];
 
@@ -383,30 +383,21 @@ function displayExpenses() {
             document.createElement("tr");
 
 
-        row.innerHTML = `
-
-            <td>${expense.id}</td>
-
-            <td>${expense.amount}</td>
-
-            <td>${expense.description}</td>
-
-            <td>${expense.note || ""}</td>
-
-            <td>${expense.category}</td>
-
-            <td>
-
-                <button
-                    onclick="deleteExpense(${expense.id})">
-
-                    Delete
-
-                </button>
-
-            </td>
-
-        `;
+       row.innerHTML = `
+    <td>${expense.id}</td>
+    <td>${expense.amount}</td>
+    <td>${expense.description}</td>
+    <td>${expense.note || ""}</td>
+    <td>${expense.category}</td>
+    <td>
+        <button
+            type="button"
+            style="color: white;"
+            onclick="deleteExpense('${expense.id}')">
+            Delete
+        </button>
+    </td>
+`;
 
 
         expenseList.appendChild(row);

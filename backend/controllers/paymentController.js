@@ -1,5 +1,8 @@
+const mongoose = require("mongoose");
 const { Cashfree, CFEnvironment } = require("cashfree-pg");
-const db = require("../utils/database");
+
+const User = require("../models/User");
+const Order = require("../models/Order");
 
 const cashfree = new Cashfree(
     CFEnvironment.SANDBOX,
@@ -18,20 +21,11 @@ async function purchasePremium(req, res) {
 
         // Get logged-in user
 
-        const getUser = `
-            SELECT *
-            FROM users
-            WHERE id = ?
-        `;
-
-        const [results] =
-            await db.execute(
-                getUser,
-                [userId]
-            );
+        const user =
+            await User.findById(userId);
 
 
-        if (results.length === 0) {
+        if (!user) {
 
             return res.status(404).json({
                 message: "User not found"
@@ -39,8 +33,6 @@ async function purchasePremium(req, res) {
 
         }
 
-
-        const user = results[0];
 
         const orderId =
             "ORDER_" + Date.now();
@@ -59,7 +51,7 @@ async function purchasePremium(req, res) {
             customer_details: {
 
                 customer_id:
-                    String(user.id),
+                    user._id.toString(),
 
                 customer_name:
                     user.name,
@@ -90,19 +82,19 @@ async function purchasePremium(req, res) {
             response.data.payment_session_id;
 
 
-        // Save order in database
+        // Save order in MongoDB
 
-        const insertOrder = `
-            INSERT INTO orders
-            (orderId, userId, amount, status)
-            VALUES (?, ?, ?, ?)
-        `;
+        await Order.create({
 
+            orderId,
 
-        await db.execute(
-            insertOrder,
-            [orderId, userId, 499, "PENDING"]
-        );
+            userId,
+
+            amount: 499,
+
+            status: "PENDING"
+
+        });
 
 
         res.status(200).json({
@@ -161,22 +153,14 @@ async function verifyPayment(req, res) {
 
         // Check that order belongs to user
 
-        const findOrder = `
-            SELECT *
-            FROM orders
-            WHERE orderId = ?
-            AND userId = ?
-        `;
+        const order =
+            await Order.findOne({
+                orderId,
+                userId
+            });
 
 
-        const [results] =
-            await db.execute(
-                findOrder,
-                [orderId, userId]
-            );
-
-
-        if (results.length === 0) {
+        if (!order) {
 
             return res.status(404).json({
 
@@ -224,54 +208,63 @@ async function verifyPayment(req, res) {
             "SUCCESS"
         ) {
 
-            // Start transaction
+            // MongoDB transaction
 
-            await db.beginTransaction();
+            const session =
+                await mongoose.startSession();
 
-
-            // Update order
-
-            const updateOrder = `
-                UPDATE orders
-                SET status = 'SUCCESS'
-                WHERE orderId = ?
-            `;
+            session.startTransaction();
 
 
-            await db.execute(
-                updateOrder,
-                [orderId]
-            );
+            try {
+
+                // Update order
+
+                await Order.findOneAndUpdate(
+                    { orderId },
+                    {
+                        status: "SUCCESS"
+                    },
+                    { session }
+                );
 
 
-            // Make user premium
+                // Make user premium
 
-            const updateUser = `
-                UPDATE users
-                SET isPremium = true
-                WHERE id = ?
-            `;
-
-
-            await db.execute(
-                updateUser,
-                [userId]
-            );
+                await User.findByIdAndUpdate(
+                    userId,
+                    {
+                        isPremium: true
+                    },
+                    { session }
+                );
 
 
-            // Both updates succeeded
+                // Commit
 
-            await db.commit();
+                await session.commitTransaction();
+
+                session.endSession();
 
 
-            res.status(200).json({
+                res.status(200).json({
 
-                message:
-                    "Transaction successful",
+                    message:
+                        "Transaction successful",
 
-                isPremium: true
+                    isPremium: true
 
-            });
+                });
+
+
+            } catch (transactionError) {
+
+                await session.abortTransaction();
+                session.endSession();
+
+                throw transactionError;
+
+            }
 
         }
 
@@ -283,16 +276,11 @@ async function verifyPayment(req, res) {
             "FAILED"
         ) {
 
-            const updateOrder = `
-                UPDATE orders
-                SET status = 'FAILED'
-                WHERE orderId = ?
-            `;
-
-
-            await db.execute(
-                updateOrder,
-                [orderId]
+            await Order.findOneAndUpdate(
+                { orderId },
+                {
+                    status: "FAILED"
+                }
             );
 
 
@@ -326,23 +314,6 @@ async function verifyPayment(req, res) {
             "Payment verification error:",
             error
         );
-
-
-        // If the success transaction failed,
-        // undo its database changes.
-
-        try {
-
-            await db.rollback();
-
-        } catch (rollbackError) {
-
-            console.log(
-                "Rollback error:",
-                rollbackError
-            );
-
-        }
 
 
         res.status(500).json({
